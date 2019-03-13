@@ -20,6 +20,8 @@ Ticker wifiReconnectTimer;
 
 const int relayPin = D1;
 
+char payloadBuffer[6];
+
 void connectToWifi() {
     Serial.println("Connecting to Wi-Fi...");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -36,7 +38,9 @@ void onWifiConnect(const WiFiEventStationModeGotIP &event) {
 }
 
 void onWifiDisconnect(const WiFiEventStationModeDisconnected &event) {
-    Serial.println("Disconnected from Wi-Fi.");
+    Serial.print("Disconnected from Wi-Fi: ");
+    Serial.println(event.reason);
+
     mqttReconnectTimer.detach();
     wifiReconnectTimer.once(2, connectToWifi);
 }
@@ -48,7 +52,7 @@ void onMqttConnect(bool) {
     mqttClient.subscribe("switch/room1-secondary_light/set", 0);
     mqttClient.subscribe("device/room1-secondary_light", 0);
 
-    // Send initial state
+    // Send current state
     mqttClient.publish("switch/room1-secondary_light", 0, false, digitalRead(relayPin) == HIGH ? "false" : "true");
 }
 
@@ -61,23 +65,19 @@ void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
     }
 }
 
-void onMqttMessage(char *topic, char *payload,
-                   AsyncMqttClientMessageProperties properties, size_t len,
-                   size_t index, size_t total) {
-    int newState;
-    char data[len + 1];
-    data[len] = '\0';
-    strncpy(data, payload, len);
+void onMqttMessage(char *, char *payload, AsyncMqttClientMessageProperties, size_t len, size_t, size_t) {
+    payloadBuffer[len] = '\0';
+    strncpy(payloadBuffer, payload, len);
 
-    if (strcmp(data, "true") == 0) {
-        newState = 0;  // Turn on
-    } else {
-        newState = 1;  // Turn off
+    uint8_t newState = HIGH;  // Turn off
+
+    if (strncmp(payloadBuffer, "true", 4) == 0) {
+        newState = LOW;  // Turn on
     }
 
     digitalWrite(relayPin, newState);
 
-    mqttClient.publish("switch/room1-secondary_light", 0, false, data);
+    mqttClient.publish("switch/room1-secondary_light", 0, false, payloadBuffer);
 
     // Save last state to the memory
     EEPROM.put(0, newState);
@@ -85,17 +85,19 @@ void onMqttMessage(char *topic, char *payload,
 }
 
 void setup() {
+    EEPROM.begin(1);    // 1 byte is enough for boolean
     Serial.begin(115200);
     Serial.println();
     Serial.println();
 
-    wifiConnectHandler = WiFi.onStationModeGotIP(onWifiConnect);
-    wifiDisconnectHandler = WiFi.onStationModeDisconnected(onWifiDisconnect);
-
     pinMode(relayPin, OUTPUT);
 
-    // Turn off by default
-    digitalWrite(relayPin, 1);
+    uint8_t lastState = HIGH;  // off by default
+    EEPROM.get(0, lastState);
+    digitalWrite(relayPin, lastState);
+
+    wifiConnectHandler = WiFi.onStationModeGotIP(onWifiConnect);
+    wifiDisconnectHandler = WiFi.onStationModeDisconnected(onWifiDisconnect);
 
     mqttClient.onConnect(onMqttConnect);
     mqttClient.onDisconnect(onMqttDisconnect);
@@ -103,16 +105,6 @@ void setup() {
     mqttClient.setServer(MQTT_HOST, MQTT_PORT);
     mqttClient.setClientId(MQTT_ID);
     mqttClient.setCredentials("device", MQTT_PASSWORD);
-
-    int lastState = 1;  // off by default
-
-    EEPROM.begin(512);
-    EEPROM.get(0, lastState);
-
-    digitalWrite(relayPin, lastState);
-
-    Serial.print("Loaded last state: ");
-    Serial.println(lastState);
 
     connectToWifi();
 }

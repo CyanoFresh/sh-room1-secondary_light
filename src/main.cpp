@@ -18,7 +18,7 @@ WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
 Ticker wifiReconnectTimer;
 
-const int relayPin = D1;
+const uint8_t relayPin = D1;
 
 char payloadBuffer[6];
 
@@ -34,12 +34,15 @@ void connectToMqtt() {
 
 void onWifiConnect(const WiFiEventStationModeGotIP &event) {
     Serial.println("Connected to Wi-Fi.");
+    digitalWrite(LED_BUILTIN, LOW);
+
     connectToMqtt();
 }
 
 void onWifiDisconnect(const WiFiEventStationModeDisconnected &event) {
     Serial.print("Disconnected from Wi-Fi: ");
     Serial.println(event.reason);
+    digitalWrite(LED_BUILTIN, HIGH);
 
     mqttReconnectTimer.detach();
     wifiReconnectTimer.once(2, connectToWifi);
@@ -47,9 +50,11 @@ void onWifiDisconnect(const WiFiEventStationModeDisconnected &event) {
 
 void onMqttConnect(bool) {
     Serial.println("Connected to MQTT.");
+    digitalWrite(LED_BUILTIN, LOW);
 
     // Subscribe to topics:
     mqttClient.subscribe("switch/room1-secondary_light/set", 0);
+    mqttClient.subscribe("switch/room1-secondary_light/toggle", 0);
     mqttClient.subscribe("device/room1-secondary_light", 0);
 
     // Send current state
@@ -59,25 +64,34 @@ void onMqttConnect(bool) {
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
     Serial.print("Disconnected from MQTT. Reason: ");
     Serial.println((int) reason);
+    digitalWrite(LED_BUILTIN, HIGH);
 
     if (WiFi.isConnected()) {
         mqttReconnectTimer.once(2, connectToMqtt);
     }
 }
 
-void onMqttMessage(char *, char *payload, AsyncMqttClientMessageProperties, size_t len, size_t, size_t) {
-    payloadBuffer[len] = '\0';
-    strncpy(payloadBuffer, payload, len);
+void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties, size_t len, size_t, size_t) {
+    uint8_t newState = HIGH;
 
-    uint8_t newState = HIGH;  // Turn off
+    if (strcmp(topic, "switch/room1-secondary_light/toggle") == 0) {
+        if (digitalRead(relayPin) == HIGH) {
+            newState = LOW;
+        }
 
-    if (strncmp(payloadBuffer, "true", 4) == 0) {
-        newState = LOW;  // Turn on
+        mqttClient.publish("switch/room1-secondary_light", 0, false, newState == HIGH ? "false" : "true");
+    } else {
+        payloadBuffer[len] = '\0';
+        strncpy(payloadBuffer, payload, len);
+
+        if (strncmp(payloadBuffer, "true", 4) == 0) {
+            newState = LOW;  // Turn on
+        }
+
+        mqttClient.publish("switch/room1-secondary_light", 0, false, payloadBuffer);
     }
 
     digitalWrite(relayPin, newState);
-
-    mqttClient.publish("switch/room1-secondary_light", 0, false, payloadBuffer);
 
     // Save last state to the memory
     EEPROM.put(0, newState);
